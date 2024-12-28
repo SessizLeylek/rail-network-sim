@@ -6,6 +6,7 @@ import "core:math"
 import rl "vendor:raylib"
 v3dist :: rl.Vector3Distance
 
+// p0: start point, p1: center point for arc, end point for a line, a: angle, is line if 0
 ArcSegment :: struct
 {
     p0, p1 : [3]f32,
@@ -17,26 +18,42 @@ Arc_ReturnPoint :: proc(arc : ArcSegment, t : f32) -> [3]f32
 {
     if(arc.a == 0)
     {
-        // When angle is 0, the arc is a line
+        // When angle is 0, the it is a line
         return arc.p0 * (1 - t) + arc.p1 * t
     }
     else
     {
         // When angle is not 0, it is a circular arc
-        m := (arc.p0 + arc.p1) * 0.5
-        d := v3dist(arc.p0, arc.p1)
-        r := d / math.sqrt(2 * (1 - math.cos(arc.a)))
-        h := math.sqrt(r * r - d * d * 0.25)
-        origin := m + h * ((arc.p1 - arc.p0).zyx * {-1 , 1, 1}) / d
-        angle0 := math.atan2((arc.p0 - origin).z, (arc.p0 - origin).x)
-        angle1 := math.atan2((arc.p1 - origin).z, (arc.p1 - origin).x)
-        
-        if(angle1 < angle0) do angle1 += rl.PI * 2  // to prevent angle1 jumping back 0
+        r := v3dist(arc.p0, arc.p1)
+        angle0 := math.atan2((arc.p0 - arc.p1).z, (arc.p0 - arc.p1).x)
 
         // interpolation
-        anglet := angle1 * t + angle0 * (1 - t)
+        anglet := arc.a * t + angle0
         yt := arc.p0.y * (1 - t) + arc.p1.y * t
 
-        return origin + {math.cos(anglet) * r, yt, math.sin(anglet) * r}
+        return arc.p1 + {math.cos(anglet) * r, yt, math.sin(anglet) * r}
     }
 }
+
+// a switch is a point where multiple rail lines connect
+Switch :: struct
+{
+    pos : [3]f32,   // world coordinates of the switch
+    closest_train : i32,    // index of the closest train to the switch
+    closest_train_distance : f32,   // how far is this train
+}
+
+// a rail line is a collection of arcs
+RailLine :: struct
+{
+    start_switch, end_switch : i32, // index of the switches at head and tail
+    rails : [dynamic]ArcSegment,
+    rail_maxspeed : [dynamic]f32,
+    trains_on : [dynamic]i32,   //index of trains on this rail line
+}
+
+RailLines : [dynamic]RailLine
+Switches : [dynamic]Switch
+
+Draft_RailLines : [dynamic]RailLine
+Draft_Switches : [dynamic]Switch

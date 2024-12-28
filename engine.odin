@@ -5,7 +5,7 @@ import rl "vendor:raylib"
 main :: proc()
 {
     rl.InitWindow(640, 640, "Rail Network Sim")
-    
+
     for !rl.WindowShouldClose()
     {
         game_update()
@@ -54,4 +54,5 @@ game_draw :: proc()
     {
         rl.DrawCircleV(Arc_ReturnPoint(arc1, i / 100).xz, 1, rl.WHITE)
     }
+    
 }
