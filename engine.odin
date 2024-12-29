@@ -15,6 +15,9 @@ main :: proc()
 {
     rl.InitWindow(960, 960, "Rail Network Sim")
 
+    screen_dim = {f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())}
+
+    resources_setup()
     game_start()
 
     for !rl.WindowShouldClose()
@@ -34,6 +37,9 @@ main :: proc()
 
     rl.CloseWindow()
 }
+
+//////////////////////////////////////////////////////////////
+// Game Logic
 
 arc1 : ArcSegment
 mesh1 : rl.Mesh
@@ -78,6 +84,7 @@ game_update :: proc()
     camera.position = rl.Vector3RotateByAxisAngle({-camera_distance, camera_height, 0}, {0, 1, 0}, camera_verticalAngle) + camera.target
 }
 
+// Creates a mesh from given rail line
 mesh_from_railline :: proc(rails : RailLine) -> rl.Mesh
 {
     // Calculate number of rectangles will form the mesh
@@ -107,8 +114,6 @@ mesh_from_railline :: proc(rails : RailLine) -> rl.Mesh
         {
             if(i == 0 && vs > 0) do continue    // skip every first 2 vertices except the head
             defer vs += 1
-
-            fmt.printfln("%v", vs)
 
             // for each rectangle;
             // calculate the necessary values
@@ -152,6 +157,9 @@ mesh_from_railline :: proc(rails : RailLine) -> rl.Mesh
     return track_mesh
 }
 
+//////////////////////////////////////////////////////////////
+// Drawing Section
+
 MATRIX1 : rl.Matrix :
 {
     1, 0, 0, 0,
@@ -169,14 +177,99 @@ game_draw3d :: proc()
 
 game_drawui :: proc()
 {
-    /*rl.DrawCircleV(arc1.p0.xz, 2, rl.YELLOW)
-    rl.DrawCircleV(arc1.p1.xz, 2, rl.YELLOW)
-    for i in 0..=f32(100)
+    for sec in ui_sections
     {
-        rl.DrawCircleV(Arc_ReturnPoint(arc1, i / 100).xz, 1, rl.WHITE)
-    }*/
+        if(!sec.isActive) do continue
+
+        for obj in sec.objects
+        {
+            // Draw appropriate element
+            switch v in obj
+            {
+                case UiPanel:
+                    ui_draw_panel(v, sec)
+                case UiButton:
+                    ui_draw_panel(v.panel, sec)
+                case UiTextField:
+                    ui_draw_text(v, sec)
+            }
+        }
+    }
 }
 
+//////////////////////////////////////////////////////////////
+// UI Elements
+screen_dim : [2]f32
+
+// stores transformation properties of a ui element
+UiElement :: struct
+{
+    anchor, position, size : [2]f32,
+}
+
+UiTextField :: struct
+{
+    element : UiElement,
+    content : cstring,
+    fontIndex : int,
+    fontSize : f32,
+    color : rl.Color,
+}
+
+// plain 2d image with a color
+UiPanel :: struct
+{
+    element : UiElement,
+    color : rl.Color
+}
+
+// a clickable panel
+UiButton :: struct
+{
+    panel : UiPanel,
+    idleColor : rl.Color,
+    hoverColor : rl.Color,
+    timeSinceLastClick : f32,
+    clickEvent : ^proc(),
+}
+
+// union of ui objects
+UiObject :: union
+{
+    UiPanel, UiButton, UiTextField,
+}
+
+ui_calculate_pos :: proc(elem : UiElement, sec : UiSection) -> [2]f32
+{
+    section_dim := sec.anchor * screen_dim - sec.anchor * sec.size
+    return elem.anchor * section_dim - elem.anchor * section_dim
+}
+
+ui_draw_panel :: proc(panel : UiPanel, sec : UiSection)
+{
+    rl.DrawTextureEx(tex(.UI), ui_calculate_pos(panel.element, sec), 0, 1, panel.color)
+}
+
+ui_update_text_size :: proc(text : ^UiTextField)
+{
+    text.element.size = rl.MeasureTextEx(FONTS[text.fontIndex], text.content, text.fontSize, 1)
+}
+
+ui_draw_text :: proc(text : UiTextField, sec : UiSection)
+{
+    rl.DrawTextEx(FONTS[text.fontIndex], text.content, ui_calculate_pos(text.element, sec), text.fontSize, 1, text.color)
+}
+
+// similar to html <div>
+UiSection :: struct
+{
+    using element : UiElement,
+    isActive : bool,
+    objects : [dynamic]UiObject,
+}
+ui_sections : [4]UiSection
+
+//////////////////////////////////////////////////////////////
 // Keyboard and Mouse Input
 INPUT_LEFTMOUSE :: rl.MouseButton.LEFT
 INPUT_RIGHTMOUSE :: rl.MouseButton.RIGHT
