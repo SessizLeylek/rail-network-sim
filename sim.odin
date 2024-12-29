@@ -5,6 +5,9 @@ import "core:math"
 // Raylib specific functions, in case we decide to change the library
 import rl "vendor:raylib"
 v3dist :: rl.Vector3Distance
+v3normal :: rl.Vector3Normalize
+v3rotate :: rl.Vector3RotateByAxisAngle
+PI :: rl.PI
 
 // p0: start point, p1: center point for arc, end point for a line, a: angle, is line if 0
 ArcSegment :: struct
@@ -32,6 +35,33 @@ Arc_ReturnPoint :: proc(arc : ArcSegment, t : f32) -> [3]f32
         yt := arc.p0.y * (1 - t) + arc.p1.y * t
 
         return arc.p1 + {math.cos(anglet) * r, yt, math.sin(anglet) * r}
+    }
+}
+
+// returns the length of the arc segment
+Arc_ReturnLength :: proc(arc : ArcSegment) -> f32
+{
+    if(arc.a == 0)
+    {
+        return v3dist(arc.p0, arc.p1)
+    }
+    else
+    {
+        r := v3dist(arc.p0, arc.p1)
+        return abs(r * arc.a)
+    }
+}
+
+// returns the 3d normal coordinates of the arc segment, t = [0, 1]
+Arc_ReturnNormal :: proc(arc : ArcSegment, t : f32) -> [3]f32
+{
+    if(arc.a == 0)
+    {
+        return v3normal(arc.p1 - arc.p0).zyx * {-1, 1, 1}
+    }
+    else
+    {
+        return v3normal(v3rotate((arc.p1 - arc.p0) * math.sign(arc.a), {0, 1, 0}, -arc.a * t))
     }
 }
 
