@@ -188,7 +188,7 @@ Draft_ConnectNodes :: proc(node1Id, node2Id : int)
     }
     else
     {
-        // we need to rails to connect them
+        // we need two rails to connect them
         biarc := CalculateBiarcs(p1, p2, t1, t2)
 
         biarc_tm := v3rotate(t1, {0, 1, 0}, biarc.a1).xz

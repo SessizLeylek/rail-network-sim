@@ -98,6 +98,10 @@ game_update :: proc()
         switch actionState
         {
             case .None:
+
+                // Escape pauses game
+                if(input_ispressed(INPUT_ESC)) do rl.CloseWindow()
+
             case .Draft_NewRail:           // NEW RAIL WILL BE START BUILDING
             case .Draft_NewRailEnd:        // NEW RAIL WILL BE BUILT
             case .Draft_RemoveRail:        // THE SELECTED RAIL WILL BE REMOVED
@@ -182,15 +186,15 @@ mesh_from_railline :: proc(rails : RailLine) -> rl.Mesh
 }
 
 // how should user's interactions result
-InteractionState :: enum
+InteractionState :: enum int
 {
-    None,
-    Draft_NewRail,
-    Draft_NewRailEnd,
-    Draft_RemoveRail,
-    Draft_NodeSelect,
-    Draft_MoveNode,
-    Draft_RotateNode,
+    None = 0x00,
+    Draft_NewRail = 0x10,
+    Draft_NewRailEnd = 0x11,
+    Draft_RemoveRail = 0x12,
+    Draft_NodeSelect = 0x13,
+    Draft_MoveNode = 0x14,
+    Draft_RotateNode = 0x15,
 }
 
 //////////////////////////////////////////////////////////////
@@ -209,10 +213,28 @@ draw_mesh :: rl.DrawMesh
 game_draw3d :: proc()
 {
     draw_mesh(mesh1, rl.LoadMaterialDefault(), MATRIX1)
+
+    // Draw Draft Mode
+    if(i32(actionState) / 16 == 1)
+    {
+        for n in Draft_Nodes
+        {
+            rl.DrawSphere(n.pos, 0.5, rl.YELLOW)
+        }
+
+        for r in Draft_Rails
+        {
+            for i in 0..=10
+            {
+                rl.DrawSphere(Arc_ReturnPoint(r.arc, f32(i) / 10), 0.1, rl.GREEN)
+            }
+        }
+    }
 }
 
 game_drawui :: proc()
 {
+    // Draw Dynamic Ui
     button_clicked = false
     for &sec in ui_sections
     {
@@ -223,6 +245,9 @@ game_drawui :: proc()
             ui_draw_object(&obj, &sec)
         }
     }
+
+    // state
+    rl.DrawText(rl.TextFormat("state: %i", actionState), 0, 64, 32, rl.RAYWHITE)
 }
 
 //////////////////////////////////////////////////////////////
@@ -396,36 +421,36 @@ when true
         ui_sections[7] = UiSection {{{0, 0}, {0, 0}, {0, 0}}, false, make([dynamic]UiObject)}
 
         // Main Hotbar
-        ui_sections[0] = UiSection {{{0.5, 1}, {0.5, 1}, {1280, 256}}, true, make([dynamic]UiObject)}
+        ui_sections[0] = UiSection {{{0.5, 1}, {0.5, 1}, {640, 128}}, true, make([dynamic]UiObject)}
         ui_sections[0].objects = {
-            ui_setup_panel({0.5, 1}, {0.5, 1}, {1280, 256}, rl.GRAY), 
-            ui_setup_button({0.5, 0.5}, {0.75, 0.18}, {640, 80}, button_enter_draft_mode),     // draft mode button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[0].objects, 1),
-            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {640, 80}, button_enter_line_mode),     // rail line button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[0].objects, 3),
-            ui_setup_button({0.5, 0.5}, {0.75, 0.82}, {640, 80}, button_enter_route_mode),     // route mode button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[0].objects, 5)}
+            ui_setup_panel({0.5, 1}, {0.5, 1}, {640, 128}, rl.GRAY), 
+            ui_setup_button({0.5, 0.5}, {0.75, 0.18}, {300, 40}, button_enter_draft_mode),     // draft mode button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[0].objects, 1),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {300, 40}, button_enter_line_mode),     // rail line button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[0].objects, 3),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.82}, {300, 40}, button_enter_route_mode),     // route mode button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[0].objects, 5)}
         ui_update_text(&ui_sections[0].objects[2].(UiTextField), "Draft Mode")
         ui_update_text(&ui_sections[0].objects[4].(UiTextField), "Rail Lines")
         ui_update_text(&ui_sections[0].objects[6].(UiTextField), "Route Mode")
 
         // Draft Mode Hotbar
-        ui_sections[1] = UiSection {{{0.5, 1}, {0.5, 1}, {1280, 256}}, false, make([dynamic]UiObject)}
+        ui_sections[1] = UiSection {{{0.5, 1}, {0.5, 1}, {640, 128}}, false, make([dynamic]UiObject)}
         ui_sections[1].objects = {
-            ui_setup_panel({0.5, 1}, {0.5, 1}, {1280, 256}, rl.GRAY), 
-            ui_setup_text({0, 1}, {0.02, 0.02}, 0, 64, rl.WHITE, nil, 0),    // mode title
-            ui_setup_button({0.5, 0.5}, {0.25, 0.18}, {600, 80}, test_hi),     // new rail button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 2),
-            ui_setup_button({0.5, 0.5}, {0.75, 0.18}, {600, 80}, test_hi),     // delete rail button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 4),
-            ui_setup_button({0.5, 0.5}, {0.25, 0.5}, {600, 80}, test_hi),     // move node button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 6),
-            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {600, 80}, test_hi),     // rotate node button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 8),
-            ui_setup_button({0.5, 0.5}, {0.25, 0.82}, {600, 80}, button_exit_draft_mode),     // return button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 10),
-            ui_setup_button({0.5, 0.5}, {0.75, 0.82}, {600, 80}, button_draft_construct),     // construct button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 12)}
+            ui_setup_panel({0.5, 1}, {0.5, 1}, {640, 128}, rl.GRAY), 
+            ui_setup_text({0, 1}, {0.02, 0.02}, 0, 48, rl.WHITE, nil, 0),    // mode title
+            ui_setup_button({0.5, 0.5}, {0.25, 0.18}, {300, 40}, button_draft_newrail),     // new rail button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 2),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.18}, {300, 40}, test_hi),     // delete rail button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 4),
+            ui_setup_button({0.5, 0.5}, {0.25, 0.5}, {300, 40}, test_hi),     // move node button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 6),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {300, 40}, test_hi),     // rotate node button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 8),
+            ui_setup_button({0.5, 0.5}, {0.25, 0.82}, {300, 40}, button_exit_draft_mode),     // return button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 10),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.82}, {300, 40}, button_draft_construct),     // construct button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 12)}
         ui_update_text(&ui_sections[1].objects[1].(UiTextField), "Draft Mode")
         ui_update_text(&ui_sections[1].objects[3].(UiTextField), "New Rail")
         ui_update_text(&ui_sections[1].objects[5].(UiTextField), "Delete Rail")
@@ -506,12 +531,20 @@ when true
         //exit draft mode
         button_exit_draft_mode()
     }
+
+    button_draft_newrail :: proc()
+    {
+        // start placing a new node
+        ui_sections[1].isActive = false
+        actionState = .Draft_NewRail
+    }
 }
 
 //////////////////////////////////////////////////////////////
 // Keyboard and Mouse Input
 INPUT_LEFTMOUSE :: rl.MouseButton.LEFT
 INPUT_RIGHTMOUSE :: rl.MouseButton.RIGHT
+INPUT_ESC :: rl.KeyboardKey.ESCAPE
 INPUT_FORWARD :: rl.KeyboardKey.W
 INPUT_LEFT :: rl.KeyboardKey.A
 INPUT_BACK :: rl.KeyboardKey.S
