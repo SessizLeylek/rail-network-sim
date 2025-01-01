@@ -78,12 +78,58 @@ RailLine :: struct
 {
     start_switch, end_switch : i32, // index of the switches at head and tail
     rails : [dynamic]ArcSegment,
-    rail_maxspeed : [dynamic]f32,
     trains_on : [dynamic]i32,   //index of trains on this rail line
 }
 
 RailLines : [dynamic]RailLine
 Switches : [dynamic]Switch
 
-Draft_RailLines : [dynamic]RailLine
-Draft_Switches : [dynamic]Switch
+DraftNode :: struct
+{
+    pos : [3]f32,
+    dir : [2]f32,
+    connectedRailIds : [dynamic]int,
+}
+
+DraftRail :: struct
+{
+    arc : ArcSegment,
+    headNodeId, tailNodeId : int,
+}
+
+Draft_Nodes : [dynamic]DraftNode
+Draft_Rails : [dynamic]DraftRail
+
+// creates a new node and returns its index
+Draft_NewNode :: proc(node : DraftNode) -> int
+{
+    return append(&Draft_Nodes, node)
+}
+
+Draft_RemoveNode :: proc(nodeId : int)
+{
+    unordered_remove(&Draft_Nodes, nodeId)
+
+    // update the changed index values
+    switchedIndex := len(Draft_Nodes)
+    for id in Draft_Nodes[nodeId].connectedRailIds
+    {
+        connectedRail := Draft_Rails[id]
+
+        if connectedRail.headNodeId == switchedIndex do connectedRail.headNodeId = nodeId
+        if connectedRail.tailNodeId == switchedIndex do connectedRail.tailNodeId = nodeId
+    }
+}
+
+// connects two nodes by adding appropriate rails between
+Draft_ConnectNodes :: proc(node1Id, node2Id : int)
+{
+
+}
+
+// moves and rotates a node, updates the connected rails
+DraftNode_MoveRotate :: proc(nodeId : int, newPos : [3]f32, newDir : [2]f32)
+{
+    Draft_Nodes[nodeId].pos = newPos
+    Draft_Nodes[nodeId].dir = newDir
+}

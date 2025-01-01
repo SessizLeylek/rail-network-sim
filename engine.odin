@@ -13,7 +13,8 @@ camera_speed :: 8
 
 main :: proc()
 {
-    rl.InitWindow(960, 960, "Rail Network Sim")
+    rl.InitWindow(1280, 720, "Rail Network Sim")
+    rl.SetExitKey(.END)
     rl.SetTargetFPS(120)
 
     screen_dim = {f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())}
@@ -42,6 +43,9 @@ main :: proc()
 
 //////////////////////////////////////////////////////////////
 // Game Logic
+
+actionState : InteractionState = .None
+selectedNodeId : int
 
 arc1 : ArcSegment
 mesh1 : rl.Mesh
@@ -85,13 +89,23 @@ game_update :: proc()
     if(camera_distance < 1) do camera_distance = 1
     else if(camera_distance > 50) do camera_distance = 50
 
-    if input_ispressed(INPUT_LEFTMOUSE)
-    {
-        if input_isoverUI() do fmt.println("OVER UI")
-        else do fmt.println("FREE")
-    }
-
     camera.position = rl.Vector3RotateByAxisAngle({-camera_distance, camera_height, 0}, {0, 1, 0}, camera_verticalAngle) + camera.target
+
+    // User Interactions
+    if(!input_isoverUI())
+    {
+        // WITH NEXT CLICK
+        switch actionState
+        {
+            case .None:
+            case .Draft_NewRail:           // NEW RAIL WILL BE START BUILDING
+            case .Draft_NewRailEnd:        // NEW RAIL WILL BE BUILT
+            case .Draft_RemoveRail:        // THE SELECTED RAIL WILL BE REMOVED
+            case .Draft_NodeSelect:    // A NODE WILL BE SELECTED FOR MOVING
+            case .Draft_MoveNode:          // SELECTED NODE WILL BE MOVED
+            case .Draft_RotateNode:        // SELECTED NODE WILL BE ROTATED
+        }
+    }
 }
 
 // Creates a mesh from given rail line
@@ -167,6 +181,18 @@ mesh_from_railline :: proc(rails : RailLine) -> rl.Mesh
     return track_mesh
 }
 
+// how should user's interactions result
+InteractionState :: enum
+{
+    None,
+    Draft_NewRail,
+    Draft_NewRailEnd,
+    Draft_RemoveRail,
+    Draft_NodeSelect,
+    Draft_MoveNode,
+    Draft_RotateNode,
+}
+
 //////////////////////////////////////////////////////////////
 // Drawing Section
 
@@ -187,13 +213,14 @@ game_draw3d :: proc()
 
 game_drawui :: proc()
 {
-    for sec in ui_sections
+    button_clicked = false
+    for &sec in ui_sections
     {
         if(!sec.isActive) do continue
 
         for &obj in sec.objects
         {
-            ui_draw_object(&obj, sec)
+            ui_draw_object(&obj, &sec)
         }
     }
 }
@@ -232,15 +259,20 @@ when true
     UiButton :: struct
     {
         panel : UiPanel,
-        originalSize : [2]f32,
-        lastClickTime : f64,
         clickEvent : proc(),
+    }
+
+    // the effect that starts when a button is pressed
+    UiButtonEffect :: struct
+    {
+        panel: UiPanel,
+        startTime : f64,
     }
 
     // union of ui objects
     UiObject :: union
     {
-        UiPanel, UiButton, UiTextField,
+        UiPanel, UiButton, UiButtonEffect, UiTextField,
     }
 
     ui_get_element :: proc(obj : UiObject) -> UiElement
@@ -251,6 +283,8 @@ when true
             case UiPanel:
                 return v.element
             case UiButton:
+                return v.panel.element
+            case UiButtonEffect:
                 return v.panel.element
             case UiTextField:
                 return v.element
@@ -265,30 +299,32 @@ when true
         return -elem.anchor * elem.size + elem.position * sec.size + sec_pos
     }
 
-    ui_draw_object :: proc(obj : ^UiObject, sec : UiSection)
+    ui_draw_object :: proc(obj : ^UiObject, sec : ^UiSection)
     {
+        
         // Draw appropriate element
         switch &v in obj
         {
             case UiPanel:
                 // Draw Panel
-                ui_draw_panel(v, sec)
+                ui_draw_panel(v, sec^)
             case UiButton:
                 // mouse over button logic
                 button := &v
                 dMousePos := rl.GetMousePosition() - ui_calculate_pos(v.panel.element, sec)
                 if(dMousePos.x > 0 && dMousePos.y > 0 &&
-                    dMousePos.x < button.originalSize.x && dMousePos.y < button.originalSize.y)
+                    dMousePos.x < ui_get_element(v).size.x && dMousePos.y < ui_get_element(v).size.y)
                 {
                     // mouse is over button
                     button.panel.color = rl.SKYBLUE
 
                     //mouse click event
-                    if(input_ispressed(INPUT_LEFTMOUSE))
+                    if(input_ispressed(INPUT_LEFTMOUSE) && !button_clicked)
                     {
-                        button.panel.element.size = button.originalSize * {0.8, 1.25}
-                        button.lastClickTime = rl.GetTime()
-                        button.clickEvent()
+                        ui_create_button_effect(ui_get_element(v), sec^)
+
+                        button_clicked = true
+                        if button.clickEvent != nil do button.clickEvent()
                     }
                 }
                 else
@@ -297,15 +333,31 @@ when true
                     button.panel.color = rl.BLUE
                 }
 
-                // button click animation
-                lerpval := f32(clamp(rl.GetTime() - button.lastClickTime, 0, 0.25))
-                button.panel.element.size = button.originalSize * ({0.8, 1.25} * (0.25 - lerpval) + {1, 1} * lerpval) * 4
-
                 // Draw Button
-                ui_draw_panel(v.panel, sec)
+                ui_draw_panel(v.panel, sec^)
+            case UiButtonEffect:
+                // slowly fade button effect
+                passedTime := rl.GetTime() - v.startTime 
+                if(passedTime < 0.25)
+                {
+                    panel := &v.panel
+
+                    // increase size and opacity over time
+                    newColor := rl.SKYBLUE
+                    newColor.a = 255 - u8(passedTime * 1020)
+                    panel.color = newColor
+                    panel.element.size *= f32(1 + (0.25 - passedTime) * 0.02)
+                    ui_draw_panel(panel^, sec^)
+                }
+                else
+                {
+                    // hide the section when it is time
+                    sec.isActive = false
+                }
+
             case UiTextField:
                 // Draw Text
-                ui_draw_text(v, sec)
+                ui_draw_text(v, sec^)
         }
     }
 
@@ -335,17 +387,52 @@ when true
         isActive : bool,
         objects : [dynamic]UiObject,
     }
-    ui_sections : [4]UiSection
+    ui_sections : [8]UiSection
 
     // ui design
     ui_setup :: proc()
     {
-        ui_sections[0] = UiSection {{{0.5, 1}, {0.5, 1}, {640, 160}}, true, make([dynamic]UiObject)}
+        // section 7 is reserved for temp
+        ui_sections[7] = UiSection {{{0, 0}, {0, 0}, {0, 0}}, false, make([dynamic]UiObject)}
+
+        // Main Hotbar
+        ui_sections[0] = UiSection {{{0.5, 1}, {0.5, 1}, {1280, 256}}, true, make([dynamic]UiObject)}
         ui_sections[0].objects = {
-            ui_setup_panel({0.5, 1}, {0.5, 1}, {640, 320}, rl.GRAY), 
-            ui_setup_button({0.5, 0.5}, {0.5, 0.5}, {256, 128}, test_hi),
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[0].objects, 1)}
-        ui_update_text(&ui_sections[0].objects[2].(UiTextField), "TEST")
+            ui_setup_panel({0.5, 1}, {0.5, 1}, {1280, 256}, rl.GRAY), 
+            ui_setup_button({0.5, 0.5}, {0.75, 0.18}, {640, 80}, button_enter_draft_mode),     // draft mode button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[0].objects, 1),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {640, 80}, button_enter_line_mode),     // rail line button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[0].objects, 3),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.82}, {640, 80}, button_enter_route_mode),     // route mode button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[0].objects, 5)}
+        ui_update_text(&ui_sections[0].objects[2].(UiTextField), "Draft Mode")
+        ui_update_text(&ui_sections[0].objects[4].(UiTextField), "Rail Lines")
+        ui_update_text(&ui_sections[0].objects[6].(UiTextField), "Route Mode")
+
+        // Draft Mode Hotbar
+        ui_sections[1] = UiSection {{{0.5, 1}, {0.5, 1}, {1280, 256}}, false, make([dynamic]UiObject)}
+        ui_sections[1].objects = {
+            ui_setup_panel({0.5, 1}, {0.5, 1}, {1280, 256}, rl.GRAY), 
+            ui_setup_text({0, 1}, {0.02, 0.02}, 0, 64, rl.WHITE, nil, 0),    // mode title
+            ui_setup_button({0.5, 0.5}, {0.25, 0.18}, {600, 80}, test_hi),     // new rail button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 2),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.18}, {600, 80}, test_hi),     // delete rail button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 4),
+            ui_setup_button({0.5, 0.5}, {0.25, 0.5}, {600, 80}, test_hi),     // move node button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 6),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {600, 80}, test_hi),     // rotate node button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 8),
+            ui_setup_button({0.5, 0.5}, {0.25, 0.82}, {600, 80}, button_exit_draft_mode),     // return button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 10),
+            ui_setup_button({0.5, 0.5}, {0.75, 0.82}, {600, 80}, button_draft_construct),     // construct button
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 64, rl.BLACK, &ui_sections[1].objects, 12)}
+        ui_update_text(&ui_sections[1].objects[1].(UiTextField), "Draft Mode")
+        ui_update_text(&ui_sections[1].objects[3].(UiTextField), "New Rail")
+        ui_update_text(&ui_sections[1].objects[5].(UiTextField), "Delete Rail")
+        ui_update_text(&ui_sections[1].objects[7].(UiTextField), "Move Node")
+        ui_update_text(&ui_sections[1].objects[9].(UiTextField), "Rotate Node")
+        ui_update_text(&ui_sections[1].objects[11].(UiTextField), "Save & Return")
+        ui_update_text(&ui_sections[1].objects[13].(UiTextField), "Construct Rails")
     }
 
     ui_setup_panel :: proc(anchor, pos, size : [2]f32, color : rl.Color) -> UiPanel
@@ -355,7 +442,12 @@ when true
 
     ui_setup_button :: proc(anchor, pos, size : [2]f32, clickEvent : proc()) -> UiButton
     {
-        return UiButton {ui_setup_panel(anchor, pos, size, rl.BLUE), size, -1, clickEvent}
+        return UiButton {ui_setup_panel(anchor, pos, size, rl.BLUE), clickEvent}
+    }
+
+    ui_setup_buttonEffect :: proc(size : [2]f32) -> UiButtonEffect
+    {
+        return UiButtonEffect {ui_setup_panel({0.5, 0.5}, {0.5, 0.5}, size, rl.SKYBLUE), rl.GetTime()}
     }
 
     ui_setup_text :: proc(anchor, pos : [2]f32, fontIndex : int, fontSize : f32, color : rl.Color, objectArray : ^[dynamic]UiObject, parentId : int) -> UiTextField
@@ -369,9 +461,50 @@ when true
         text.element.size = rl.MeasureTextEx(FONTS[text.fontIndex], content, text.fontSize, 1)
     }
 
+    // creates a button effect
+    ui_create_button_effect :: proc(elem : UiElement, sec : UiSection)
+    {
+        // create temp section
+        delete_dynamic_array(ui_sections[7].objects)
+        ui_sections[7] = UiSection {{{0, 0}, ui_calculate_pos(elem, sec) / screen_dim, elem.size}, true, make([dynamic]UiObject)}
+        ui_sections[7].objects = {ui_setup_buttonEffect(elem.size)}
+    }
+
     test_hi :: proc()
     {
         fmt.println("HI!")
+    }
+
+    button_clicked : bool = false
+
+    // Enter Draft Mode Button
+    button_enter_draft_mode :: proc()
+    {
+        ui_sections[0].isActive = false
+        ui_sections[1].isActive = true
+    }
+
+    button_enter_line_mode :: proc()
+    {
+
+    }
+
+    button_enter_route_mode :: proc()
+    {
+
+    }
+
+    // Exit Draft Mode Button
+    button_exit_draft_mode :: proc()
+    {
+        ui_sections[0].isActive = true
+        ui_sections[1].isActive = false
+    }
+
+    button_draft_construct :: proc()
+    {
+        //exit draft mode
+        button_exit_draft_mode()
     }
 }
 
