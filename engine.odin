@@ -91,25 +91,71 @@ game_update :: proc()
 
     camera.position = rl.Vector3RotateByAxisAngle({-camera_distance, camera_height, 0}, {0, 1, 0}, camera_verticalAngle) + camera.target
 
-    // User Interactions
-    if(!input_isoverUI())
-    {
-        // WITH NEXT CLICK
-        switch actionState
+    ray := rl.GetMouseRay(rl.GetMousePosition(), camera)
+    rayCollision := rl.GetRayCollisionQuad(ray, {-100, 0, -100}, {-100, 0, 100}, {100, 0, 100}, {100, 0, -100})
+
+    switch actionState
         {
             case .None:
 
                 // Escape pauses game
-                if(input_ispressed(INPUT_ESC)) do rl.CloseWindow()
+                if(input_ispressed(INPUT_ESC))
+                {
+                    rl.CloseWindow()
+                    return
+                } 
 
             case .Draft_NewRail:           // NEW RAIL WILL BE START BUILDING
+                if(!input_isoverUI() && input_ispressed(INPUT_LEFTMOUSE))
+                {
+                    // start creating a new rail
+                    if(rayCollision.hit)
+                    {
+                        nodeIndex := Draft_NearestNode(rayCollision.point, 1)
+                        if(nodeIndex == -1)
+                        {
+                            // start creating from 0
+                            selectedNodeId = Draft_NewNode(rayCollision.point, {0, 1})
+                            Draft_SetTempRail(rayCollision.point, selectedNodeId)
+                            actionState = .Draft_NewRailEnd
+                        }
+                        else
+                        {
+                            // start creating from an existing node
+                            selectedNodeId = nodeIndex
+                            Draft_SetTempRail(rayCollision.point, selectedNodeId)
+                            actionState = .Draft_NewRailEnd
+                        }
+                    }
+                }
+                else if(input_ispressed(INPUT_ESC))
+                {
+                    // escape state
+                    ui_sections[1].isActive = true
+                    actionState = .None
+                }
             case .Draft_NewRailEnd:        // NEW RAIL WILL BE BUILT
+                // update selected node
+                Draft_SetTempRail(rayCollision.point, selectedNodeId)
+
+                if(!input_isoverUI() && input_ispressed(INPUT_LEFTMOUSE))
+                {
+                    Draft_SaveTempRail()
+                    actionState = .Draft_NewRail
+                    
+                }
+                else if(input_ispressed(INPUT_ESC))
+                {
+                    // escape state
+                    ui_sections[1].isActive = true
+                    actionState = .None
+
+                }
             case .Draft_RemoveRail:        // THE SELECTED RAIL WILL BE REMOVED
-            case .Draft_NodeSelect:    // A NODE WILL BE SELECTED FOR MOVING
+            case .Draft_NodeSelect:        // A NODE WILL BE SELECTED FOR MOVING
             case .Draft_MoveNode:          // SELECTED NODE WILL BE MOVED
             case .Draft_RotateNode:        // SELECTED NODE WILL BE ROTATED
         }
-    }
 }
 
 // Creates a mesh from given rail line
@@ -224,7 +270,8 @@ game_draw3d :: proc()
 
         for r in Draft_Rails
         {
-            for i in 0..=10
+            rl.DrawSphere(r.arc.p1, 0.2, rl.ORANGE)
+            for i in 0..<10
             {
                 rl.DrawSphere(Arc_ReturnPoint(r.arc, f32(i) / 10), 0.1, rl.GREEN)
             }
@@ -247,6 +294,7 @@ game_drawui :: proc()
     }
 
     // state
+    rl.DrawFPS(0, 0)
     rl.DrawText(rl.TextFormat("state: %i", actionState), 0, 64, 32, rl.RAYWHITE)
 }
 

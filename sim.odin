@@ -1,6 +1,7 @@
 package game
 
 import "core:math"
+import "core:fmt"
 
 // Raylib specific functions, in case we decide to change the library
 import rl "vendor:raylib"
@@ -76,12 +77,14 @@ Switch :: struct
     pos : [3]f32,   // world coordinates of the switch
     closest_train : i32,    // index of the closest train to the switch
     closest_train_distance : f32,   // how far is this train
+    group_directions : [dynamic][2]f32, // directions of the groups
 }
 
 // a rail line is a collection of arcs
 RailLine :: struct
 {
     start_switch, end_switch : i32, // index of the switches at head and tail
+    start_group, end_group : u8,   // rail lines are grouped, passing through is only allowed between the same groups
     rails : [dynamic]ArcSegment,
     trains_on : [dynamic]i32,   //index of trains on this rail line
 }
@@ -102,13 +105,24 @@ DraftRail :: struct
     headNodeId, tailNodeId : int,
 }
 
+DraftTempRail :: struct
+{
+    arcs : [2]ArcSegment,
+    shape : u8,
+    headNodeId : int,
+    tailNodeId : int,
+    isSet : bool
+}
+
 Draft_Nodes : [dynamic]DraftNode
 Draft_Rails : [dynamic]DraftRail
+temp_rail : DraftTempRail 
 
 // creates a new node and returns its index
-Draft_NewNode :: proc(node : DraftNode) -> int
+Draft_NewNode :: proc(pos : [3]f32, dir : [2]f32) -> int
 {
-    return append(&Draft_Nodes, node)
+    append(&Draft_Nodes, DraftNode {pos, dir, make([dynamic]int)})
+    return len(Draft_Nodes) - 1
 }
 
 Draft_RemoveNode :: proc(nodeId : int)
@@ -127,13 +141,31 @@ Draft_RemoveNode :: proc(nodeId : int)
     }
 }
 
-Biarc :: struct
+Draft_NewRail :: proc(rail : DraftRail)
 {
-    pm, c1, c2 : [3]f32,
-    a1, a2 : f32,
+    newIndex := len(Draft_Rails)
+    append(&Draft_Rails, rail)
+    append(&Draft_Nodes[rail.headNodeId].connectedRailIds, newIndex)
+    append(&Draft_Nodes[rail.tailNodeId].connectedRailIds, newIndex)
 }
 
-CalculateBiarcs :: proc(p1, p2, t1, t2 : [3]f32) -> Biarc
+Draft_RemoveRail :: proc(railId : int)
+{
+    unordered_remove(&Draft_Rails, railId)
+    
+    //update the changed index values
+    switchedIndex := len(Draft_Rails)
+    for &n in Draft_Nodes
+    {
+        for &i, p in n.connectedRailIds
+        {
+            if i == railId do unordered_remove(&n.connectedRailIds, p)
+            if i == switchedIndex do i = railId
+        }
+    }
+}
+
+CalculateBiarcs :: proc(p1, p2, t1, t2 : [3]f32) -> [2]ArcSegment
 {
     // biarc interpolation formulas are gotten from ryan juckett
     v := p2 - p1
@@ -153,7 +185,7 @@ CalculateBiarcs :: proc(p1, p2, t1, t2 : [3]f32) -> Biarc
         if v3cross(v, t2).y < 0 do a2 = PI
         else do a2 = -PI
 
-        return {pm, c1, c2, a1, a2}
+        return {ArcSegment {p1, c1, a1}, ArcSegment {pm, c2, a2}}
     }
 
     pm = (p1 + d * t1 + p2 - d* t2) * 0.5
@@ -167,43 +199,130 @@ CalculateBiarcs :: proc(p1, p2, t1, t2 : [3]f32) -> Biarc
     c2 = p2 + n1 * s2
 
     a1 := v3angle(v3normal(p1 - c1), v3normal(pm - c1))
-    a2 := v3angle(v3normal(p2 - c2), v3normal(pm - c2))
-    
-    return {pm, c1, c2, a1, a2}
+    a2 := v3angle(v3normal(p2 - c2), v3normal(c2 - pm))
+
+    return {ArcSegment {p1, c1, a1}, ArcSegment {pm, c2, a2}}
 }
 
-// connects two nodes by adding appropriate rails between
-Draft_ConnectNodes :: proc(node1Id, node2Id : int)
+// updates all connected rails
+DraftNode_UpdateRails :: proc(nodeId : int)
 {
-    p1 := Draft_Nodes[node1Id].pos
-    p2 := Draft_Nodes[node2Id].pos 
-    t1 := rl.Vector3 { Draft_Nodes[node1Id].dir.x, 0,  Draft_Nodes[node1Id].dir.y}
-    t2 := rl.Vector3 { Draft_Nodes[node2Id].dir.x, 0,  Draft_Nodes[node2Id].dir.y}
+    array_len := len(Draft_Nodes[nodeId].connectedRailIds)
+    for i in 0..<array_len
+    {
+        // remove rail changes the order, new elements put to the end
+        // getting element 0 all time would help us
+        r := Draft_Nodes[nodeId].connectedRailIds[0]
+
+        otherNode : int
+        if Draft_Rails[r].headNodeId == nodeId do otherNode = Draft_Rails[r].tailNodeId
+        else do otherNode = Draft_Rails[r].headNodeId
+
+        Draft_RemoveRail(r)
+        Draft_SetTempRail({}, nodeId, otherNode)
+        Draft_SaveTempRail()
+    }
+}
+
+Draft_SetTempRail :: proc(endPos : [3]f32, headNodeId : int, tailNodeId : int = -1)
+{
+    temp_rail.headNodeId = headNodeId
+    temp_rail.tailNodeId = tailNodeId
+
+    p1 := Draft_Nodes[headNodeId].pos
+    t1 := rl.Vector3 { Draft_Nodes[headNodeId].dir.x, 0,  Draft_Nodes[headNodeId].dir.y}
+
+    p2, t2 : [3]f32
+    if(tailNodeId > -1)
+    {
+        // valid tail node
+        p2 = Draft_Nodes[tailNodeId].pos
+        t2 = rl.Vector3 { Draft_Nodes[tailNodeId].dir.x, 0,  Draft_Nodes[tailNodeId].dir.y}
+    }
+    else
+    {
+        // tail node not valid
+        p2 = endPos
+        t2 = v3normal(2 * (endPos - p1) - t1)
+    }
     v := p2 - p1
 
-    if(v3dot(t1, v) == 0 && v3dot(t2, v) == 0)
+    if(v3cross(t1, v).y == 0 && v3cross(t2, v).y == 0)
     {
         // rail is just a straight line
-        append(&Draft_Rails, DraftRail{{p1, p2, 0}, node1Id, node2Id})
+        temp_rail.arcs[0] = ArcSegment {p1, p2, 0}
+        temp_rail.shape = 0
     }
     else
     {
         // we need two rails to connect them
         biarc := CalculateBiarcs(p1, p2, t1, t2)
-
-        biarc_tm := v3rotate(t1, {0, 1, 0}, biarc.a1).xz
-        midNodeId := Draft_NewNode({biarc.pm, biarc_tm, make([dynamic]int)})
-
-        arc1 := ArcSegment {p1, biarc.c1, biarc.a1}
-        arc2 := ArcSegment {biarc.pm, biarc.c2, biarc.a2}
+        //biarc_tm := v3rotate(t1, {0, 1, 0}, biarc.a1).xz
 
         // correct the end point if the arcs are a line
-        if arc1.a == 0 do arc1.p1 = biarc.pm
-        if arc2.a == 0 do arc2.p1 = p2
+        if biarc[0].a == 0 do biarc[0].p1 = biarc[1].p0
+        if biarc[1].a == 0 do biarc[1].p1 = p2
 
-        append(&Draft_Rails, DraftRail {arc1, node1Id, midNodeId})
-        append(&Draft_Rails, DraftRail {arc2, midNodeId, node2Id})
+        temp_rail.arcs = biarc
+        temp_rail.shape = 1
     }
+
+    temp_rail.isSet = true
+}
+
+Draft_SaveTempRail :: proc()
+{
+    // assign tail node
+    tailNodeId : int
+    if(temp_rail.tailNodeId == -1)
+    {
+        arc := temp_rail.arcs[temp_rail.shape]
+        tailNodeId = Draft_NewNode(Arc_ReturnPoint(arc, 1), v3rotate(Arc_ReturnNormal(arc, 1), {0, 1, 0}, 0.5 * PI).xz)
+    }
+    else
+    {
+        tailNodeId = temp_rail.tailNodeId    
+    }
+
+    if(temp_rail.shape == 0)
+    {
+        // create just one rail
+        Draft_NewRail({temp_rail.arcs[0], temp_rail.headNodeId, tailNodeId})
+    }
+    else
+    {
+        // create two rails and middle node
+        arc := temp_rail.arcs[0]
+        middleNodeId := Draft_NewNode(Arc_ReturnPoint(arc, 1), v3rotate(Arc_ReturnNormal(arc, 1), {0, 1, 0}, 0.5 * PI).xz)
+        
+        Draft_NewRail({temp_rail.arcs[0], temp_rail.headNodeId, middleNodeId})
+        Draft_NewRail({temp_rail.arcs[1], middleNodeId, tailNodeId})
+    }
+
+    Draft_ResetTempRail()
+}
+
+Draft_ResetTempRail :: proc()
+{
+    temp_rail.isSet = false
+}
+
+// returns the nearest node index to the given point
+Draft_NearestNode :: proc(point : [3]f32, range : f32 = 4096) -> int
+{
+    closest_distance : f32
+    closest_index : int = -1
+    for n, i in Draft_Nodes
+    {
+        dist := v3dist(n.pos, point)
+        if(dist <= range && dist < closest_distance)
+        {
+            closest_distance = dist
+            closest_index = i
+        }
+    }
+
+    return closest_index
 }
 
 // moves and rotates a node, updates the connected rails
