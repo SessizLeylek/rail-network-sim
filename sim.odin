@@ -37,7 +37,7 @@ Arc_ReturnPoint :: proc(arc : ArcSegment, t : f32) -> [3]f32
         angle0 := math.atan2((arc.p0 - arc.p1).z, (arc.p0 - arc.p1).x)
 
         // interpolation
-        anglet := arc.a * t + angle0
+        anglet := - arc.a * t + angle0
         yt := arc.p0.y * (1 - t) + arc.p1.y * t
 
         return arc.p1 + {math.cos(anglet) * r, yt, math.sin(anglet) * r}
@@ -63,13 +63,32 @@ Arc_ReturnNormal :: proc(arc : ArcSegment, t : f32) -> [3]f32
 {
     if(arc.a == 0)
     {
-        return v3normal(arc.p1 - arc.p0).zyx * {-1, 1, 1}
+        return -v3normal(arc.p1 - arc.p0).zyx * {-1, 1, 1}
     }
     else
     {
-        return v3normal(v3rotate((arc.p1 - arc.p0) * math.sign(arc.a), {0, 1, 0}, -arc.a * t))
+        return v3normal(v3rotate((arc.p1 - arc.p0) * math.sign(arc.a), {0, 1, 0}, arc.a * t))
     }
 }
+
+// calculates an arc given start point, end point, start tangent
+Arc_FromTwoPoints :: proc(p0, p1, t : [3]f32) -> ArcSegment
+{
+    v := p1 - p0
+    t0 := v3normal(t)
+    a:= 2 * v3angle(v, t0) //math.acos(v3dot(v3normal(v), t0))
+
+    if a == 0 do return{p0, p1, 0}
+
+    r := math.sqrt(1 / (2 - 2 * math.cos(a))) * v3len(v)
+    origin := r * t0.zyx * {-1, 1, 1}
+
+    if v3cross(v, t0).y < 0 do origin *= -1
+    else do a *= -1
+    origin += p0
+
+    return {p0, origin, a}
+} 
 
 // a switch is a point where multiple rail lines connect
 Switch :: struct
@@ -165,14 +184,32 @@ Draft_RemoveRail :: proc(railId : int)
     }
 }
 
+GetBiarcConnection :: proc(p1, p2, t1, t2 : [3]f32) -> [3]f32
+{
+    v := p2 - p1
+
+    _vt := v3dot(v, t1 + t2);
+    _tt := 2 * (1 - v3dot(t1, t2));
+
+    d : f32
+    if (_tt == 0) do d = v3dot(v, v) / v3dot(v, t2) * 0.25;
+    else do d = (math.sqrt(_vt * _vt + _tt * v3dot(v, v)) - _vt) / _tt;
+
+    pm := 0.5 * (p1 + p2 + d * t1 - d * t2)
+    return pm
+}
+
 CalculateBiarcs :: proc(p1, p2, t1, t2 : [3]f32) -> [2]ArcSegment
 {
     // biarc interpolation formulas are gotten from ryan juckett
     v := p2 - p1
 
+    vt := v3dot(v, t1 + t2)
+    tt := 2 * (1 - v3dot(t1, t2))
+    
     pm, c1, c2 : [3]f32
     d : f32
-    if v3dot(t1, t2) != 0 do d = (-(v3dot(v, t1 + t2)) + math.sqrt(v3dot(v, t1 + t2) * v3dot(v, t1 + t2) + 2 * (1 - v3dot(t1, t2)) * v3dot(v, v))) / (2 * (1 - v3dot(t1, t2))) 
+    if tt != 0 do d = (-vt + math.sqrt(vt * vt + tt * v3dot(v, v))) / tt 
     if v3dot(v, t2) != 0 do d = v3dot(v, v) / v3dot(v, t2) * 0.25
     else
     {
@@ -188,40 +225,31 @@ CalculateBiarcs :: proc(p1, p2, t1, t2 : [3]f32) -> [2]ArcSegment
         return {ArcSegment {p1, c1, a1}, ArcSegment {pm, c2, a2}}
     }
 
-    pm = (p1 + d * t1 + p2 - d* t2) * 0.5
+    pm = (p1 + p2 + d * t1 - d * t2) * 0.5
+
+    rm_ratio := v3len((pm - p1) / v3len(p2 - p1))
+    tm := (p2 - p1) * rm_ratio + p1
 
     n1 := t1.zyx * {-1, 0, 1}
     n2 := t2.zyx * {-1, 0, 1}
-    s1 := (v3dot(pm - p1, pm - p1)/v3dot(2 * n1, pm - p1))
-    s2 := (v3dot(pm - p2, pm - p2)/v3dot(2 * n2, pm - p2))
+    s1 := (v3dot(pm - p1, pm - p1)/v3dot(n1, pm - p1)) * 0.5
+    s2 := (v3dot(pm - p2, pm - p2)/v3dot(n2, pm - p2)) * 0.5
 
     c1 = p1 + n1 * s1
-    c2 = p2 + n1 * s2
+    c2 = p2 + n2 * s2
 
-    a1 := v3angle(v3normal(p1 - c1), v3normal(pm - c1))
-    a2 := v3angle(v3normal(p2 - c2), v3normal(c2 - pm))
+    op1 := v3normal(p1 - c1)
+    om1 := v3normal(pm - c1)
+    op2 := v3normal(p2 - c2)
+    om2 := v3normal(pm - c2)
+
+    a1 := math.acos(v3dot(op1, om1))
+    a2 := math.acos(v3dot(op2, om2))
+
+    if v3cross(op1, om1).y <= 0 do a1 *= -1
+    if v3cross(op2, om2).y <= 0 do a2 *= -1
 
     return {ArcSegment {p1, c1, a1}, ArcSegment {pm, c2, a2}}
-}
-
-// updates all connected rails
-DraftNode_UpdateRails :: proc(nodeId : int)
-{
-    array_len := len(Draft_Nodes[nodeId].connectedRailIds)
-    for i in 0..<array_len
-    {
-        // remove rail changes the order, new elements put to the end
-        // getting element 0 all time would help us
-        r := Draft_Nodes[nodeId].connectedRailIds[0]
-
-        otherNode : int
-        if Draft_Rails[r].headNodeId == nodeId do otherNode = Draft_Rails[r].tailNodeId
-        else do otherNode = Draft_Rails[r].headNodeId
-
-        Draft_RemoveRail(r)
-        Draft_SetTempRail({}, nodeId, otherNode)
-        Draft_SaveTempRail()
-    }
 }
 
 Draft_SetTempRail :: proc(endPos : [3]f32, headNodeId : int, tailNodeId : int = -1)
@@ -230,21 +258,25 @@ Draft_SetTempRail :: proc(endPos : [3]f32, headNodeId : int, tailNodeId : int = 
     temp_rail.tailNodeId = tailNodeId
 
     p1 := Draft_Nodes[headNodeId].pos
-    t1 := rl.Vector3 { Draft_Nodes[headNodeId].dir.x, 0,  Draft_Nodes[headNodeId].dir.y}
+    t1 := v3normal(Draft_Nodes[headNodeId].dir.xxy * {1, 0, 1})
 
     p2, t2 : [3]f32
-    if(tailNodeId > -1)
+    if(tailNodeId == -1)
     {
-        // valid tail node
-        p2 = Draft_Nodes[tailNodeId].pos
-        t2 = rl.Vector3 { Draft_Nodes[tailNodeId].dir.x, 0,  Draft_Nodes[tailNodeId].dir.y}
-    }
-    else
-    {
-        // tail node not valid
+        // tail node not valid, create just one arc
         p2 = endPos
         t2 = v3normal(2 * (endPos - p1) - t1)
+
+        temp_rail.arcs[0] = Arc_FromTwoPoints(p1, endPos, t1)
+        temp_rail.shape = 0
+        temp_rail.isSet = true
+
+        return
     }
+    
+    // valid tail node
+    p2 = Draft_Nodes[tailNodeId].pos
+    t2 = Draft_Nodes[tailNodeId].dir.xxy * {1, 0, 1}
     v := p2 - p1
 
     if(v3cross(t1, v).y == 0 && v3cross(t2, v).y == 0)
@@ -255,15 +287,9 @@ Draft_SetTempRail :: proc(endPos : [3]f32, headNodeId : int, tailNodeId : int = 
     }
     else
     {
-        // we need two rails to connect them
-        biarc := CalculateBiarcs(p1, p2, t1, t2)
-        //biarc_tm := v3rotate(t1, {0, 1, 0}, biarc.a1).xz
+        pm := GetBiarcConnection(p1, p2, t1, t2)
 
-        // correct the end point if the arcs are a line
-        if biarc[0].a == 0 do biarc[0].p1 = biarc[1].p0
-        if biarc[1].a == 0 do biarc[1].p1 = p2
-
-        temp_rail.arcs = biarc
+        temp_rail.arcs = {Arc_FromTwoPoints(p1, pm, t1), Arc_FromTwoPoints(p2, pm, -t2)}
         temp_rail.shape = 1
     }
 

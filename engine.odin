@@ -11,6 +11,7 @@ camera_distance : f32 = 10.0
 camera_height : f32 = 5.0
 camera_speed :: 8
 
+shouldClose := false
 main :: proc()
 {
     rl.InitWindow(1280, 720, "Rail Network Sim")
@@ -36,6 +37,8 @@ main :: proc()
             rl.EndMode3D()
             game_drawui()
         rl.EndDrawing()
+
+        if shouldClose do break
     }
 
     rl.CloseWindow()
@@ -53,9 +56,9 @@ mesh1 : rl.Mesh
 game_start :: proc()
 {
     temp_railline : RailLine
-    append(&temp_railline.rails, ArcSegment {{0, 0, 0}, {1, 0, 0}, rl.PI})
+    append(&temp_railline.rails, ArcSegment {{0, 0, 0}, {1, 0, 0}, -rl.PI})
     append(&temp_railline.rails, ArcSegment {{2, 0, 0}, {2, 0, 5}, 0})
-    append(&temp_railline.rails, ArcSegment {{2, 0, 5}, {4, 0, 5}, -rl.PI})
+    append(&temp_railline.rails, ArcSegment {{2, 0, 5}, {4, 0, 5}, rl.PI})
     mesh1 = mesh_from_railline(temp_railline)
 }
 
@@ -101,7 +104,7 @@ game_update :: proc()
                 // Escape pauses game
                 if(input_ispressed(INPUT_ESC))
                 {
-                    rl.CloseWindow()
+                    shouldClose = true
                     return
                 } 
 
@@ -199,13 +202,13 @@ mesh_from_railline :: proc(rails : RailLine) -> rl.Mesh
 
             // set vertices
             // first vertex
-            track_mesh.vertices[6 * vs]     = (midpoint - rightvec).x
-            track_mesh.vertices[6 * vs + 1] = (midpoint - rightvec).y
-            track_mesh.vertices[6 * vs + 2] = (midpoint - rightvec).z
+            track_mesh.vertices[6 * vs]     = (midpoint + rightvec).x
+            track_mesh.vertices[6 * vs + 1] = (midpoint + rightvec).y
+            track_mesh.vertices[6 * vs + 2] = (midpoint + rightvec).z
             // second vertex
-            track_mesh.vertices[6 * vs + 3] = (midpoint + rightvec).x
-            track_mesh.vertices[6 * vs + 4] = (midpoint + rightvec).y
-            track_mesh.vertices[6 * vs + 5] = (midpoint + rightvec).z
+            track_mesh.vertices[6 * vs + 3] = (midpoint - rightvec).x
+            track_mesh.vertices[6 * vs + 4] = (midpoint - rightvec).y
+            track_mesh.vertices[6 * vs + 5] = (midpoint - rightvec).z
             // texture coordinates
             track_mesh.texcoords[4 * vs]     = 0
             track_mesh.texcoords[4 * vs + 2] = 1
@@ -271,9 +274,23 @@ game_draw3d :: proc()
         for r in Draft_Rails
         {
             rl.DrawSphere(r.arc.p1, 0.2, rl.ORANGE)
-            for i in 0..<10
+            for i in 0..<Arc_ReturnLength(r.arc)
             {
-                rl.DrawSphere(Arc_ReturnPoint(r.arc, f32(i) / 10), 0.1, rl.GREEN)
+                rl.DrawSphere(Arc_ReturnPoint(r.arc, f32(i) / Arc_ReturnLength(r.arc)), 0.1, rl.GREEN)
+            }
+        }
+
+        if temp_rail.isSet
+        {
+            for s in 0..=temp_rail.shape
+            {
+                for i in 0..=Arc_ReturnLength(temp_rail.arcs[s])
+                {
+                    col := rl.GREEN
+                    if i == 0 do col = rl.RED 
+                    if i == 50 do col = rl.MAGENTA 
+                    rl.DrawSphere(Arc_ReturnPoint(temp_rail.arcs[s], f32(i) / Arc_ReturnLength(temp_rail.arcs[s])), 0.1, col)
+                }
             }
         }
     }
