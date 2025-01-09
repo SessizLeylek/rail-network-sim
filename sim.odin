@@ -25,7 +25,7 @@ ArcSegment :: struct
 // returns the 3d coordinates on the arc segment, t = [0, 1]
 Arc_ReturnPoint :: proc(arc : ArcSegment, t : f32) -> [3]f32
 {
-    if(arc.a == 0)
+    if(abs(arc.a) < 0.01)
     {
         // When angle is 0, the it is a line
         return arc.p0 * (1 - t) + arc.p1 * t
@@ -47,7 +47,7 @@ Arc_ReturnPoint :: proc(arc : ArcSegment, t : f32) -> [3]f32
 // returns the length of the arc segment
 Arc_ReturnLength :: proc(arc : ArcSegment) -> f32
 {
-    if(arc.a == 0)
+    if(abs(arc.a) < 0.01)
     {
         return v3dist(arc.p0, arc.p1)
     }
@@ -61,7 +61,7 @@ Arc_ReturnLength :: proc(arc : ArcSegment) -> f32
 // returns the 3d normal coordinates of the arc segment, t = [0, 1]
 Arc_ReturnNormal :: proc(arc : ArcSegment, t : f32) -> [3]f32
 {
-    if(arc.a == 0)
+    if(abs(arc.a) < 0.01)
     {
         return -v3normal(arc.p1 - arc.p0).zyx * {-1, 1, 1}
     }
@@ -78,7 +78,8 @@ Arc_FromTwoPoints :: proc(p0, p1, t : [3]f32) -> ArcSegment
     t0 := v3normal(t)
     a:= 2 * v3angle(v, t0) //math.acos(v3dot(v3normal(v), t0))
 
-    if a == 0 do return{p0, p1, 0}
+    if math.is_nan(a) do a = 0
+    if abs(a) < 0.01 do return{p0, p1, 0}
 
     r := math.sqrt(1 / (2 - 2 * math.cos(a))) * v3len(v)
     origin := r * t0.zyx * {-1, 1, 1}
@@ -89,6 +90,36 @@ Arc_FromTwoPoints :: proc(p0, p1, t : [3]f32) -> ArcSegment
 
     return {p0, origin, a}
 } 
+
+// is given 3d point on the arc
+Arc_PointOnArc :: proc(arc : ArcSegment, point : [3]f32) -> bool
+{
+    if abs(arc.a) < 0.01
+    {
+        // check line
+        if DistanceToLine(arc.p0, arc.p1, point) <= 0.5 do return true
+    }
+    else
+    {
+        //check arc
+        // first check the distance is appropriate
+        if abs(v3dist(arc.p0, arc.p1) - v3dist(arc.p1, point)) < 0.5
+        {
+            // then check the angle
+            if abs(v3angle(v3rotate(arc.p0 - arc.p1, {0, 1, 0}, arc.a * 0.5), point - arc.p1)) <= abs(arc.a * 0.5) do return true
+        }
+    }
+
+    return false
+}
+
+DistanceToLine :: proc(p0, p1, point: [3]f32) -> f32
+{
+    t := v3dot(point - p0, p1 - p0) / v3dot(p1 - p0, p1 - p0)
+    if t > 1 do return v3dist(point, p1) // distance to point 1
+    else if t < 0 do return v3dist(point, p0) // distance to point 0
+    else do return v3len(v3cross(point - p0, p1 - p0)) / v3len(p1 - p0)
+}
 
 // a switch is a point where multiple rail lines connect
 Switch :: struct
@@ -147,7 +178,7 @@ Draft_NewNode :: proc(pos : [3]f32, dir : [2]f32) -> int
 Draft_RemoveNode :: proc(nodeId : int)
 {
     delete_dynamic_array(Draft_Nodes[nodeId].connectedRailIds)
-    unordered_remove(&Draft_Nodes, nodeId)
+    defer unordered_remove(&Draft_Nodes, nodeId)
 
     // update the changed index values
     switchedIndex := len(Draft_Nodes)
@@ -176,12 +207,36 @@ Draft_RemoveRail :: proc(railId : int)
     switchedIndex := len(Draft_Rails)
     for &n in Draft_Nodes
     {
+        railids_to_delete := make([dynamic]int)
         for &i, p in n.connectedRailIds
         {
-            if i == railId do unordered_remove(&n.connectedRailIds, p)
+            if i == railId do append(&railids_to_delete, p)
             if i == switchedIndex do i = railId
         }
+        for len(railids_to_delete) > 0
+        {
+            unordered_remove(&n.connectedRailIds, railids_to_delete[0])
+            unordered_remove(&railids_to_delete, 0)
+        }
+        delete_dynamic_array(railids_to_delete)
     }
+
+    // delete empty nodes
+    nodes_to_delete := make([dynamic]int)
+    for n, i in Draft_Nodes
+    {
+        if len(n.connectedRailIds) == 0
+        {
+            append(&nodes_to_delete, i)
+        }
+    }
+    for len(nodes_to_delete) > 0
+    {
+        Draft_RemoveNode(nodes_to_delete[len(nodes_to_delete) - 1])
+        unordered_remove(&nodes_to_delete, len(nodes_to_delete) - 1)
+    }
+    delete_dynamic_array(nodes_to_delete)
+
 }
 
 GetBiarcConnection :: proc(p1, p2, t1, t2 : [3]f32) -> [3]f32
@@ -199,66 +254,14 @@ GetBiarcConnection :: proc(p1, p2, t1, t2 : [3]f32) -> [3]f32
     return pm
 }
 
-CalculateBiarcs :: proc(p1, p2, t1, t2 : [3]f32) -> [2]ArcSegment
-{
-    // biarc interpolation formulas are gotten from ryan juckett
-    v := p2 - p1
-
-    vt := v3dot(v, t1 + t2)
-    tt := 2 * (1 - v3dot(t1, t2))
-    
-    pm, c1, c2 : [3]f32
-    d : f32
-    if tt != 0 do d = (-vt + math.sqrt(vt * vt + tt * v3dot(v, v))) / tt 
-    if v3dot(v, t2) != 0 do d = v3dot(v, v) / v3dot(v, t2) * 0.25
-    else
-    {
-        // two semicircles situation
-        c1 = p1 + 0.25 * v
-        c2 = p2 + 0.75 * v
-        a1, a2 : f32
-        if v3cross(v, t1).y < 0 do a1 = PI
-        else do a1 = -PI
-        if v3cross(v, t2).y < 0 do a2 = PI
-        else do a2 = -PI
-
-        return {ArcSegment {p1, c1, a1}, ArcSegment {pm, c2, a2}}
-    }
-
-    pm = (p1 + p2 + d * t1 - d * t2) * 0.5
-
-    rm_ratio := v3len((pm - p1) / v3len(p2 - p1))
-    tm := (p2 - p1) * rm_ratio + p1
-
-    n1 := t1.zyx * {-1, 0, 1}
-    n2 := t2.zyx * {-1, 0, 1}
-    s1 := (v3dot(pm - p1, pm - p1)/v3dot(n1, pm - p1)) * 0.5
-    s2 := (v3dot(pm - p2, pm - p2)/v3dot(n2, pm - p2)) * 0.5
-
-    c1 = p1 + n1 * s1
-    c2 = p2 + n2 * s2
-
-    op1 := v3normal(p1 - c1)
-    om1 := v3normal(pm - c1)
-    op2 := v3normal(p2 - c2)
-    om2 := v3normal(pm - c2)
-
-    a1 := math.acos(v3dot(op1, om1))
-    a2 := math.acos(v3dot(op2, om2))
-
-    if v3cross(op1, om1).y <= 0 do a1 *= -1
-    if v3cross(op2, om2).y <= 0 do a2 *= -1
-
-    return {ArcSegment {p1, c1, a1}, ArcSegment {pm, c2, a2}}
-}
-
-Draft_SetTempRail :: proc(endPos : [3]f32, headNodeId : int, tailNodeId : int = -1)
+// sets the values of temp rail; 
+Draft_SetTempRail :: proc(endPos : [3]f32, headNodeId : int, headDirection : i8 = 1, tailNodeId : int = -1, tailDirection : i8 = 1)
 {
     temp_rail.headNodeId = headNodeId
     temp_rail.tailNodeId = tailNodeId
 
     p1 := Draft_Nodes[headNodeId].pos
-    t1 := v3normal(Draft_Nodes[headNodeId].dir.xxy * {1, 0, 1})
+    t1 := v3normal(Draft_Nodes[headNodeId].dir.xxy * {1, 0, 1}) * f32(headDirection)
 
     p2, t2 : [3]f32
     if(tailNodeId == -1)
@@ -276,7 +279,7 @@ Draft_SetTempRail :: proc(endPos : [3]f32, headNodeId : int, tailNodeId : int = 
     
     // valid tail node
     p2 = Draft_Nodes[tailNodeId].pos
-    t2 = Draft_Nodes[tailNodeId].dir.xxy * {1, 0, 1}
+    t2 = Draft_Nodes[tailNodeId].dir.xxy * {1, 0, 1} * f32(tailDirection)
     v := p2 - p1
 
     if(v3cross(t1, v).y == 0 && v3cross(t2, v).y == 0)
@@ -336,7 +339,7 @@ Draft_ResetTempRail :: proc()
 // returns the nearest node index to the given point
 Draft_NearestNode :: proc(point : [3]f32, range : f32 = 4096) -> int
 {
-    closest_distance : f32
+    closest_distance : f32 = 999999
     closest_index : int = -1
     for n, i in Draft_Nodes
     {
@@ -351,9 +354,25 @@ Draft_NearestNode :: proc(point : [3]f32, range : f32 = 4096) -> int
     return closest_index
 }
 
-// moves and rotates a node, updates the connected rails
-DraftNode_MoveRotate :: proc(nodeId : int, newPos : [3]f32, newDir : [2]f32)
+// returns the nearest draft rail index to the given point
+Draft_NearestRail :: proc(point : [3]f32) -> int
 {
-    Draft_Nodes[nodeId].pos = newPos
-    Draft_Nodes[nodeId].dir = newDir
+    for r, i in Draft_Rails
+    {
+        if Arc_PointOnArc(r.arc, point) do return i
+    }
+
+    return -1
+}
+
+Draft_ConstructAll :: proc()
+{
+    // divide rails by intersection points (with some tolerance)
+    // find rail line segments
+    // find switches
+    // save them all
+
+    // reset the arrays
+    shrink(&Draft_Nodes, 0)
+    shrink(&Draft_Rails, 0)
 }

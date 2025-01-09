@@ -8,7 +8,7 @@ import rl "vendor:raylib"
 camera : rl.Camera3D = {{1, 0, 0}, {0, 0, 0}, {0, 1, 0}, 90, rl.CameraProjection.PERSPECTIVE}
 camera_verticalAngle : f32 = 0.0
 camera_distance : f32 = 10.0
-camera_height : f32 = 5.0
+camera_height : f32 = 1.0
 camera_speed :: 8
 
 shouldClose := false
@@ -49,6 +49,8 @@ main :: proc()
 
 actionState : InteractionState = .None
 selectedNodeId : int
+highlightedNodeId : int = -1
+highlightedRailId : int = -1
 
 arc1 : ArcSegment
 mesh1 : rl.Mesh
@@ -81,7 +83,9 @@ game_update :: proc()
 
         rl.SetMouseCursor(.RESIZE_ALL)
         camera_verticalAngle += cameraSpeedMultiplier * -rl.GetMouseDelta().x * MOUSE_SENSITIVITY
-        camera_height += cameraSpeedMultiplier * rl.GetMouseDelta().y * 5 * MOUSE_SENSITIVITY
+        camera_height += cameraSpeedMultiplier * rl.GetMouseDelta().y * MOUSE_SENSITIVITY
+        if camera_height > rl.PI * 0.48 do camera_height = rl.PI * 0.48
+        if camera_height < 0.1 do camera_height = 0.1
     }
     else
     {
@@ -92,10 +96,14 @@ game_update :: proc()
     if(camera_distance < 1) do camera_distance = 1
     else if(camera_distance > 50) do camera_distance = 50
 
-    camera.position = rl.Vector3RotateByAxisAngle({-camera_distance, camera_height, 0}, {0, 1, 0}, camera_verticalAngle) + camera.target
+    camera.position = rl.Vector3RotateByAxisAngle({math.cos(camera_height), math.sin(camera_height), 0} * camera_distance, {0, 1, 0}, camera_verticalAngle) + camera.target
 
     ray := rl.GetMouseRay(rl.GetMousePosition(), camera)
     rayCollision := rl.GetRayCollisionQuad(ray, {-100, 0, -100}, {-100, 0, 100}, {100, 0, 100}, {100, 0, -100})
+    nearestNodeIndex := Draft_NearestNode(rayCollision.point, 1)
+    railToDelete := Draft_NearestRail(rayCollision.point)
+    highlightedNodeId = nearestNodeIndex
+    highlightedRailId = railToDelete
 
     switch actionState
         {
@@ -114,8 +122,7 @@ game_update :: proc()
                     // start creating a new rail
                     if(rayCollision.hit)
                     {
-                        nodeIndex := Draft_NearestNode(rayCollision.point, 1)
-                        if(nodeIndex == -1)
+                        if(nearestNodeIndex == -1)
                         {
                             // start creating from 0
                             selectedNodeId = Draft_NewNode(rayCollision.point, {0, 1})
@@ -125,7 +132,7 @@ game_update :: proc()
                         else
                         {
                             // start creating from an existing node
-                            selectedNodeId = nodeIndex
+                            selectedNodeId = nearestNodeIndex
                             Draft_SetTempRail(rayCollision.point, selectedNodeId)
                             actionState = .Draft_NewRailEnd
                         }
@@ -139,7 +146,30 @@ game_update :: proc()
                 }
             case .Draft_NewRailEnd:        // NEW RAIL WILL BE BUILT
                 // update selected node
-                Draft_SetTempRail(rayCollision.point, selectedNodeId)
+
+                // if head node is independent, make it look towards mouse
+                if len(Draft_Nodes[selectedNodeId].connectedRailIds) == 0
+                {
+                    Draft_Nodes[selectedNodeId].dir = rl.Vector2Normalize((rayCollision.point - Draft_Nodes[selectedNodeId].pos).xz)
+                }
+
+                // calculate extend direction
+                extendDirection : i8 = 1
+                if rl.Vector3DotProduct(Draft_Nodes[selectedNodeId].dir.xxy * {1, 0, 1}, rayCollision.point - Draft_Nodes[selectedNodeId].pos) < 0 do extendDirection = -1
+
+                if nearestNodeIndex == -1
+                {
+                    // temp rail will not be connected to an existing node
+                    Draft_SetTempRail(rayCollision.point, selectedNodeId, extendDirection)
+                }
+                else
+                {
+                    if selectedNodeId == nearestNodeIndex do break
+                    // temp rail will connect to an existing node
+                    extendDirectionTail : i8 = 1
+                    if rl.Vector3DotProduct(Draft_Nodes[nearestNodeIndex].dir.xxy * {1, 0, 1}, rayCollision.point - Draft_Nodes[nearestNodeIndex].pos) > 0 do extendDirectionTail = -1
+                    Draft_SetTempRail(rayCollision.point, selectedNodeId, extendDirection, nearestNodeIndex, extendDirectionTail)
+                }
 
                 if(!input_isoverUI() && input_ispressed(INPUT_LEFTMOUSE))
                 {
@@ -149,15 +179,35 @@ game_update :: proc()
                 }
                 else if(input_ispressed(INPUT_ESC))
                 {
+                    Draft_ResetTempRail()
+
+                    // delete the independent node
+                    if len(Draft_Nodes[selectedNodeId].connectedRailIds) == 0
+                    {
+                        Draft_RemoveNode(selectedNodeId)
+                    }
+                    
+                    
                     // escape state
                     ui_sections[1].isActive = true
                     actionState = .None
 
                 }
             case .Draft_RemoveRail:        // THE SELECTED RAIL WILL BE REMOVED
-            case .Draft_NodeSelect:        // A NODE WILL BE SELECTED FOR MOVING
-            case .Draft_MoveNode:          // SELECTED NODE WILL BE MOVED
-            case .Draft_RotateNode:        // SELECTED NODE WILL BE ROTATED
+                if !input_isoverUI() && input_ispressed(INPUT_LEFTMOUSE) && railToDelete != -1
+                {
+                    Draft_RemoveRail(railToDelete)
+                    
+                    // escape state
+                    ui_sections[1].isActive = true
+                    actionState = .None
+                }
+                else if input_ispressed(INPUT_ESC)
+                {
+                    // escape state
+                    ui_sections[1].isActive = true
+                    actionState = .None
+                }
         }
 }
 
@@ -241,9 +291,6 @@ InteractionState :: enum int
     Draft_NewRail = 0x10,
     Draft_NewRailEnd = 0x11,
     Draft_RemoveRail = 0x12,
-    Draft_NodeSelect = 0x13,
-    Draft_MoveNode = 0x14,
-    Draft_RotateNode = 0x15,
 }
 
 //////////////////////////////////////////////////////////////
@@ -264,19 +311,24 @@ game_draw3d :: proc()
     draw_mesh(mesh1, rl.LoadMaterialDefault(), MATRIX1)
 
     // Draw Draft Mode
-    if(i32(actionState) / 16 == 1)
+    if(i32(actionState) / 16 == 1 || ui_sections[1].isActive)
     {
-        for n in Draft_Nodes
+        for n, i in Draft_Nodes
         {
-            rl.DrawSphere(n.pos, 0.5, rl.YELLOW)
+            col := rl.YELLOW
+            if highlightedNodeId == i && (actionState == .Draft_NewRail || actionState == .Draft_NewRailEnd) do col = rl.SKYBLUE
+
+            rl.DrawSphere(n.pos, 0.5, col)
         }
 
-        for r in Draft_Rails
+        for r, j in Draft_Rails
         {
-            rl.DrawSphere(r.arc.p1, 0.2, rl.ORANGE)
-            for i in 0..<Arc_ReturnLength(r.arc)
+            for i in 0..<Arc_ReturnLength(r.arc) * 5
             {
-                rl.DrawSphere(Arc_ReturnPoint(r.arc, f32(i) / Arc_ReturnLength(r.arc)), 0.1, rl.GREEN)
+                col := rl.GREEN
+                if highlightedRailId == j && actionState == .Draft_RemoveRail do col = rl.SKYBLUE
+
+                rl.DrawSphere(Arc_ReturnPoint(r.arc, f32(i) / Arc_ReturnLength(r.arc) * 0.2), 0.1, col)
             }
         }
 
@@ -286,10 +338,7 @@ game_draw3d :: proc()
             {
                 for i in 0..=Arc_ReturnLength(temp_rail.arcs[s])
                 {
-                    col := rl.GREEN
-                    if i == 0 do col = rl.RED 
-                    if i == 50 do col = rl.MAGENTA 
-                    rl.DrawSphere(Arc_ReturnPoint(temp_rail.arcs[s], f32(i) / Arc_ReturnLength(temp_rail.arcs[s])), 0.1, col)
+                    rl.DrawSphere(Arc_ReturnPoint(temp_rail.arcs[s], f32(i) / Arc_ReturnLength(temp_rail.arcs[s])), 0.1, rl.LIGHTGRAY)
                 }
             }
         }
@@ -503,26 +552,20 @@ when true
         ui_sections[1] = UiSection {{{0.5, 1}, {0.5, 1}, {640, 128}}, false, make([dynamic]UiObject)}
         ui_sections[1].objects = {
             ui_setup_panel({0.5, 1}, {0.5, 1}, {640, 128}, rl.GRAY), 
-            ui_setup_text({0, 1}, {0.02, 0.02}, 0, 48, rl.WHITE, nil, 0),    // mode title
-            ui_setup_button({0.5, 0.5}, {0.25, 0.18}, {300, 40}, button_draft_newrail),     // new rail button
+            ui_setup_text({0.5, 0}, {0.5, 0.02}, 0, 40, rl.WHITE, nil, 0),    // mode title
+            ui_setup_button({0.5, 0.5}, {0.25, 0.5}, {300, 40}, button_draft_newrail),     // new rail button
             ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 2),
-            ui_setup_button({0.5, 0.5}, {0.75, 0.18}, {300, 40}, test_hi),     // delete rail button
+            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {300, 40}, button_draft_delete),     // delete rail button
             ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 4),
-            ui_setup_button({0.5, 0.5}, {0.25, 0.5}, {300, 40}, test_hi),     // move node button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 6),
-            ui_setup_button({0.5, 0.5}, {0.75, 0.5}, {300, 40}, test_hi),     // rotate node button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 8),
             ui_setup_button({0.5, 0.5}, {0.25, 0.82}, {300, 40}, button_exit_draft_mode),     // return button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 10),
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 6),
             ui_setup_button({0.5, 0.5}, {0.75, 0.82}, {300, 40}, button_draft_construct),     // construct button
-            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 12)}
+            ui_setup_text({0.5, 0.5}, {0.5, 0.5}, 0, 32, rl.BLACK, &ui_sections[1].objects, 8)}
         ui_update_text(&ui_sections[1].objects[1].(UiTextField), "Draft Mode")
         ui_update_text(&ui_sections[1].objects[3].(UiTextField), "New Rail")
         ui_update_text(&ui_sections[1].objects[5].(UiTextField), "Delete Rail")
-        ui_update_text(&ui_sections[1].objects[7].(UiTextField), "Move Node")
-        ui_update_text(&ui_sections[1].objects[9].(UiTextField), "Rotate Node")
-        ui_update_text(&ui_sections[1].objects[11].(UiTextField), "Save & Return")
-        ui_update_text(&ui_sections[1].objects[13].(UiTextField), "Construct Rails")
+        ui_update_text(&ui_sections[1].objects[7].(UiTextField), "Save & Return")
+        ui_update_text(&ui_sections[1].objects[9].(UiTextField), "Construct Rails")
     }
 
     ui_setup_panel :: proc(anchor, pos, size : [2]f32, color : rl.Color) -> UiPanel
@@ -595,6 +638,7 @@ when true
     {
         //exit draft mode
         button_exit_draft_mode()
+        Draft_ConstructAll()
     }
 
     button_draft_newrail :: proc()
@@ -602,6 +646,13 @@ when true
         // start placing a new node
         ui_sections[1].isActive = false
         actionState = .Draft_NewRail
+    }
+
+    button_draft_delete :: proc()
+    {
+        // delete a new node
+        ui_sections[1].isActive = false
+        actionState = .Draft_RemoveRail
     }
 }
 
